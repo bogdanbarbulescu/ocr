@@ -1,0 +1,37 @@
+body {
+    background-color: #f8f9fa; /* Light background */
+}
+
+.video-container {
+    position: relative;
+    width: 100%;
+    max-width: 600px; /* Limit max width */
+    margin: 0 auto; /* Center */
+    border: 1px solid #ccc;
+    background-color: #000; /* Black background for video area */
+    overflow: hidden; /* Ensure canvas doesn't overflow */
+}
+
+#video {
+    display: block; /* Remove extra space below video */
+    width: 100%;
+    height: auto;
+}
+
+/* Make spinner visible only during init */
+#captureBtn:not(:disabled) #initSpinner {
+    display: none;
+}
+#captureBtn:disabled #initSpinner {
+     display: inline-block; /* Show spinner when button is disabled */
+ }
+
+textarea {
+    resize: none; /* Disable textarea resizing */
+}
+
+/* Add some basic feedback on copy */
+#copyBtn.copied {
+    background-color: #198754; /* Bootstrap success green */
+    border-color: #198754;
+}
