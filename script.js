@@ -1,24 +1,57 @@
+// --- DOM Elements ---
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
-const captureBtn = document.getElementById('captureBtn');
-const captureBtnText = document.getElementById('captureBtnText');
-const initSpinner = document.getElementById('initSpinner');
+const capturedImage = document.getElementById('capturedImage'); // Added img element
+const startCameraBtn = document.getElementById('startCameraBtn');
+const stopCameraBtn = document.getElementById('stopCameraBtn');
+const captureRecognizeBtn = document.getElementById('captureRecognizeBtn');
+const captureBtnText = document.getElementById('captureBtnText'); // Text part of the button
+const ocrSpinner = document.getElementById('ocrSpinner'); // Spinner element
+const exportImageBtn = document.getElementById('exportImageBtn');
 const resultText = document.getElementById('resultText');
 const copyBtn = document.getElementById('copyBtn');
 const statusDiv = document.getElementById('status');
 
+// --- State Variables ---
 let stream = null;
 let tesseractWorker = null;
 let tesseractReady = false;
+let isProcessing = false; // Flag to prevent concurrent operations
+let imageCaptured = false; // Flag to track if an image is ready for export
+
+// --- Update Button States ---
+function updateButtonStates() {
+    startCameraBtn.disabled = !!stream || isProcessing; // Disable if stream active or processing
+    stopCameraBtn.disabled = !stream || isProcessing;  // Disable if stream inactive or processing
+
+    // Capture button needs stream AND Tesseract ready, and not processing
+    captureRecognizeBtn.disabled = !stream || !tesseractReady || isProcessing;
+
+    // Export needs an image captured (on canvas) and not processing
+    exportImageBtn.disabled = !imageCaptured || isProcessing;
+
+    // Copy needs text in the result area and not processing
+    copyBtn.disabled = !resultText.value || isProcessing;
+
+    // Handle spinner/text on Capture button
+    if (isProcessing) {
+        captureRecognizeBtn.classList.add('processing');
+        ocrSpinner.style.display = 'inline-block';
+        captureBtnText.textContent = 'Processing...';
+    } else {
+        captureRecognizeBtn.classList.remove('processing');
+        ocrSpinner.style.display = 'none';
+        captureBtnText.textContent = 'Capture & Recognize';
+    }
+}
+
 
 // --- Tesseract Initialization ---
 async function initializeTesseract() {
     statusDiv.textContent = 'Loading OCR Engine...';
     try {
-        // Use Tesseract.createWorker('eng', 1, { // Older syntax
-        tesseractWorker = await Tesseract.createWorker('eng', 1, { // v5 syntax uses options object
+        tesseractWorker = await Tesseract.createWorker('eng', 1, {
             logger: m => {
-                // console.log(m); // Detailed progress
                 if (m.status === 'recognizing text') {
                     statusDiv.textContent = `Recognizing... ${Math.round(m.progress * 100)}%`;
                 } else if (m.status.startsWith('loading') || m.status.startsWith('downloading')) {
@@ -27,135 +60,165 @@ async function initializeTesseract() {
                     statusDiv.textContent = m.status;
                 }
             },
-            // Optional: Specify cache path or disable cache
-            // cacheMethod: 'none' // If you want to force download each time
-            // workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.0/dist/worker.min.js' // If needed
-            // corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@v5.0.5/tesseract-core.wasm.js'
-            // langPath: 'https://tessdata.projectnaptha.com/4.0.0_fast' // Language data path
+            // cacheMethod: 'none' // Optional: force download
         });
-        // await tesseractWorker.loadLanguage('eng'); // Already done by createWorker
-        // await tesseractWorker.initialize('eng'); // Already done by createWorker
-        console.log('Tesseract worker created and initialized.');
+        console.log('Tesseract worker ready.');
         tesseractReady = true;
-        statusDiv.textContent = 'OCR Engine Ready. Camera active.';
-        enableCaptureButton();
+        statusDiv.textContent = 'OCR Engine Ready. Press "Start Camera".';
+        updateButtonStates(); // Update buttons now that Tesseract is ready
 
     } catch (error) {
         console.error("Error initializing Tesseract:", error);
         statusDiv.textContent = 'Error loading OCR Engine. Check console.';
         statusDiv.classList.replace('alert-info', 'alert-danger');
-        disableCaptureButton('OCR Failed');
+        tesseractReady = false;
+        updateButtonStates();
     }
 }
 
-// --- Camera Setup ---
+// --- Camera Start ---
 async function startCamera() {
+    if (stream) return; // Already running
+
     statusDiv.textContent = 'Requesting camera access...';
+    isProcessing = true; // Briefly disable buttons during startup
+    updateButtonStates();
+
     try {
-        // Prefer the rear camera ('environment')
-        const constraints = {
-            video: {
-                facingMode: 'environment',
-                 // Optional: Add resolution constraints if needed
-                 // width: { ideal: 1280 },
-                 // height: { ideal: 720 }
-            },
-            audio: false
-        };
+        const constraints = { video: { facingMode: 'environment' }, audio: false };
         stream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = stream;
-        video.onloadedmetadata = () => {
-            console.log("Camera stream started.");
-            // Only enable capture *after* tesseract is also ready
-            if (tesseractReady) {
-                enableCaptureButton();
-                statusDiv.textContent = 'Camera and OCR ready. Point at text and capture.';
-            } else {
-                 statusDiv.textContent = 'Camera ready. Waiting for OCR Engine...';
-                 // Button text remains 'Initializing...'
-            }
-        };
+        await video.play(); // Ensure video plays
+
+        video.onloadedmetadata = () => { // Use onloadedmetadata or wait for play()
+             console.log("Camera stream started.");
+             statusDiv.textContent = 'Camera active. Point at text and capture.';
+             isProcessing = false;
+             updateButtonStates();
+        }
+         // Fallback if onloadedmetadata doesn't fire reliably after play()
+         setTimeout(() => {
+            if (!isProcessing) return; // Already handled by onloadedmetadata
+            console.log("Camera stream started (via timeout).");
+            statusDiv.textContent = 'Camera active. Point at text and capture.';
+            isProcessing = false;
+            updateButtonStates();
+        }, 1000); // Wait 1 second
+
+
     } catch (err) {
         console.error("Error accessing camera:", err);
-        statusDiv.textContent = `Error accessing camera: ${err.name}. Ensure permissions are granted and using HTTPS.`;
+        statusDiv.textContent = `Error accessing camera: ${err.name}. Grant permissions & use HTTPS.`;
         statusDiv.classList.replace('alert-info', 'alert-danger');
-        disableCaptureButton('Camera Error');
+        stream = null; // Ensure stream is null on error
+        isProcessing = false;
+        updateButtonStates();
     }
 }
 
-function enableCaptureButton() {
-    captureBtn.disabled = false;
-    initSpinner.style.display = 'none';
-    captureBtnText.textContent = 'Capture & Recognize Text';
-}
+// --- Camera Stop ---
+function stopCameraStream() {
+    if (!stream) return; // Already stopped
 
-function disableCaptureButton(reason = 'Processing...') {
-     captureBtn.disabled = true;
-     initSpinner.style.display = 'inline-block'; // Show spinner if needed
-     captureBtnText.textContent = reason;
-     if (reason === 'Initializing...') {
-        initSpinner.style.display = 'inline-block';
-     } else {
-         initSpinner.style.display = 'none'; // Hide spinner for Processing/Error
-     }
-}
+    isProcessing = true; // Disable buttons during stop
+    updateButtonStates();
 
+    stream.getTracks().forEach(track => track.stop());
+    video.srcObject = null;
+    stream = null;
+    // Optionally clear the captured image display
+    // capturedImage.style.display = 'none';
+    // capturedImage.src = '#';
+    // imageCaptured = false; // Reset if desired when camera stops
+
+    console.log("Camera stream stopped.");
+    statusDiv.textContent = 'Camera stopped. Press "Start Camera" to begin.';
+    isProcessing = false;
+    updateButtonStates();
+}
 
 // --- Capture & OCR ---
-captureBtn.addEventListener('click', async () => {
-    if (!stream || !tesseractReady || !tesseractWorker) {
-        console.warn('Camera stream or Tesseract not ready.');
-        statusDiv.textContent = 'Please wait for initialization.';
-        return;
-    }
+async function captureAndRecognize() {
+    if (!stream || !tesseractReady || isProcessing) return;
 
-    disableCaptureButton('Processing...');
-    copyBtn.disabled = true; // Disable copy while processing
+    isProcessing = true;
+    imageCaptured = false; // Reset capture state until successful draw
+    updateButtonStates();
     resultText.value = ''; // Clear previous results
 
+    statusDiv.textContent = 'Capturing frame...';
     const context = canvas.getContext('2d');
-    // Set canvas dimensions to match the video's intrinsic dimensions for higher quality capture
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
-    // Draw the current video frame onto the canvas
+    if (canvas.width === 0 || canvas.height === 0) {
+         console.error("Video dimensions are zero. Cannot capture.");
+         statusDiv.textContent = 'Error: Video dimensions are zero.';
+         isProcessing = false;
+         updateButtonStates();
+         return;
+    }
+
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    imageCaptured = true; // Image is now on the canvas
     statusDiv.textContent = 'Image captured, starting recognition...';
 
-    try {
-        // Perform OCR on the canvas image data
-        const { data: { text } } = await tesseractWorker.recognize(canvas);
+    // --- Optional: Display captured image ---
+    capturedImage.src = canvas.toDataURL('image/jpeg', 0.9); // Use JPEG for smaller size
+    capturedImage.style.display = 'block';
+    // --- End Optional Display ---
 
+
+    try {
+        const { data: { text } } = await tesseractWorker.recognize(canvas);
         resultText.value = text;
         statusDiv.textContent = 'Recognition complete.';
-        statusDiv.classList.replace('alert-danger', 'alert-info'); // Reset status style if it was error
-        copyBtn.disabled = !text; // Enable copy only if text was found
-
+        statusDiv.classList.replace('alert-danger', 'alert-info');
     } catch (error) {
         console.error('OCR Error:', error);
         resultText.value = 'Error during OCR process.';
         statusDiv.textContent = 'Error during recognition. See console.';
         statusDiv.classList.replace('alert-info', 'alert-danger');
-        copyBtn.disabled = true;
     } finally {
-        // Re-enable capture button regardless of success or failure
-        enableCaptureButton();
+        isProcessing = false;
+        updateButtonStates(); // Re-enable buttons (including Export if capture worked)
     }
-});
+}
+
+// --- Export Image ---
+function exportImage() {
+    if (!imageCaptured || isProcessing || canvas.width === 0 || canvas.height === 0) {
+        console.warn("Cannot export image - no valid image captured or currently processing.");
+        return;
+    }
+
+    const dataUrl = canvas.toDataURL('image/png'); // Get PNG data URL
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = `ocr_capture_${Date.now()}.png`; // Filename with timestamp
+
+    // Trigger download
+    document.body.appendChild(link); // Required for Firefox
+    link.click();
+    document.body.removeChild(link); // Clean up
+
+    statusDiv.textContent = 'Image exported.';
+}
+
 
 // --- Copy Functionality ---
 copyBtn.addEventListener('click', () => {
-    if (!resultText.value) return;
+    if (!resultText.value || isProcessing) return;
 
     navigator.clipboard.writeText(resultText.value)
         .then(() => {
-            // Visual feedback
             copyBtn.textContent = 'Copied!';
             copyBtn.classList.add('copied');
             setTimeout(() => {
                 copyBtn.textContent = 'Copy Text';
                 copyBtn.classList.remove('copied');
-            }, 1500); // Reset after 1.5 seconds
+                updateButtonStates(); // Ensure state is correct
+            }, 1500);
         })
         .catch(err => {
             console.error('Failed to copy text: ', err);
@@ -165,19 +228,29 @@ copyBtn.addEventListener('click', () => {
 });
 
 
+// --- Event Listeners ---
+startCameraBtn.addEventListener('click', startCamera);
+stopCameraBtn.addEventListener('click', stopCameraStream);
+captureRecognizeBtn.addEventListener('click', captureAndRecognize);
+exportImageBtn.addEventListener('click', exportImage);
+
+
 // --- Initial Load ---
 window.addEventListener('load', () => {
-    // Start camera and Tesseract initialization in parallel
-    startCamera();
-    initializeTesseract();
+    // Don't start camera automatically
+    initializeTesseract(); // Start loading OCR engine
+    updateButtonStates(); // Set initial button states
 });
 
-// Optional: Clean up when the page is closed (might not always fire reliably)
-// window.addEventListener('beforeunload', async () => {
-//     if (stream) {
-//         stream.getTracks().forEach(track => track.stop());
-//     }
-//     if (tesseractWorker) {
-//         await tesseractWorker.terminate();
-//     }
-// });
+// Optional: Clean up on page close
+window.addEventListener('beforeunload', async () => {
+    stopCameraStream(); // Try to stop camera
+    if (tesseractWorker && tesseractReady) { // Check if worker exists and is ready
+         try {
+             await tesseractWorker.terminate();
+             console.log("Tesseract worker terminated.");
+         } catch (e) {
+             console.error("Error terminating Tesseract worker:", e);
+         }
+    }
+});
